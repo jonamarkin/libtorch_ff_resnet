@@ -1,0 +1,25 @@
+{
+    "groups" : [       
+    
+    {
+        "name" : "G1",
+        "endpoint": "node01:8000"
+    },
+   
+    { 
+        "name" : "G2",
+        "endpoint": "node02:8001"
+    },
+    
+    {
+        "name" : "G4",
+        "endpoint": "node04:8004"
+    },
+    {
+        "name" : "G5",
+        "endpoint": "node05:8006"
+    }
+  
+    ]
+}
+
