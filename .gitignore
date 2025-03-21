@@ -12,3 +12,5 @@ latest_model.pt
 resnet152.pt
 
 .vscode
+
+data
