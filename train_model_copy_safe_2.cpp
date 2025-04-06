@@ -14,8 +14,8 @@ using namespace ff;
 std::mutex mtx;
 
 // Configuration constants
-const int NUM_WORKERS = 8;
-const int NUM_EPOCHS = 5;
+const int NUM_WORKERS = 4;
+const int NUM_EPOCHS = 10;
 const int BATCH_SIZE = 64;
 const float LEARNING_RATE = 0.001;
 const std::string MODEL_PATH = "resnet152.pt";
@@ -547,13 +547,13 @@ int main(int argc, char* argv[]) {
         // Create nodes
         ff_pipeline main_pipeline;
         ff_a2a a2a;
-        Source source, source2, source3, source4;
+        Source source, source2;
         Sink sink;
         Feedback feedback;
         
         // Create worker pool
         std::vector<Worker*> workers;
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 4; ++i) {
             workers.push_back(new Worker());
         }
 
@@ -564,26 +564,15 @@ int main(int argc, char* argv[]) {
         main_pipeline.add_stage(&feedback);
         
         // Set up the all-to-all pattern
-        // a2a.add_firstset<Source>({&source});
-        // a2a.add_secondset<Worker>(workers);
-        
-        // // Create groups for nodes
-        // a2a.createGroup("G1") << &source;
-        // a2a.createGroup("G2") << workers[0] << workers[1];
-        // //a2a.createGroup("G3") << workers[2] << workers[3];
-        // sink.createGroup("G4") << &sink;
-        // feedback.createGroup("G5") << &feedback;
-
-        a2a.add_firstset<Source>({&source, &source2, &source3, &source4});
+        a2a.add_firstset<Source>({&source});
         a2a.add_secondset<Worker>(workers);
         
         // Create groups for nodes
         a2a.createGroup("G1") << &source << workers[0] << workers[1];
         a2a.createGroup("G2") << &source2 << workers[2] << workers[3];
-        a2a.createGroup("G3") << &source3 << workers[4] << workers[5];
-        a2a.createGroup("G4") << &source4 << workers[6] << workers[7];
-        sink.createGroup("G5") << &sink;
-        feedback.createGroup("G6") << &feedback;
+        //a2a.createGroup("G3") << workers[2] << workers[3];
+        sink.createGroup("G4") << &sink;
+        feedback.createGroup("G5") << &feedback;
         
         // Enable wrap-around for feedback
         main_pipeline.wrap_around();

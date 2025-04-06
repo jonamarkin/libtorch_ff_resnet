@@ -40,7 +40,9 @@ make
 
 # Execute the load_data program
 #mpirun --host localhost,localhost,localhost -n 3  gdb -ex run -ex bt --args ./train_resnet --DFF_Config=../resnet.json
-I_MPI_OFI_PROVIDER=tcp I_MPI_DEBUG=5 LD_PRELOAD=/home/j.markin/mpiP_build/lib/libmpiP.so nohup mpirun -iface enp130s0f1 --host node01,node02,node03,node04,node05 -n 4 -ppn 1 ./train_resnet --DFF_Config=../resnet.json > ../eth_logs/4_workers_by2.log 2>&1 &
+I_MPI_OFI_PROVIDER=tcp I_MPI_DEBUG=5 LD_PRELOAD=/home/j.markin/mpiP_build/lib/libmpiP.so nohup mpirun -iface enp130s0f1 --host node01,node02,node03,node04,node05,node06 -n 4 -ppn 1 ./train_resnet --DFF_Config=../resnet.json > ../eth_logs/8_workers_by2.log 2>&1 &
+
+#I_MPI_OFI_PROVIDER=tcp I_MPI_DEBUG=5 LD_PRELOAD=/home/j.markin/mpiP_build/lib/libmpiP.so nohup mpirun -iface enp130s0f1 -n 6 -ppn 1  -f /home/j.markin/hpcproject/torchprojects/dataset_example_mpi/hostfile_eth1 ./train_resnet --DFF_Config=../resnet.json > ../eth_logs/6_nodes_8workers_2.log 2>&1 &
 
 #I_MPI_OFI_PROVIDER=tcp I_MPI_DEBUG=5 LD_PRELOAD=/home/j.markin/mpiP_build/lib/libmpiP.so nohup mpirun -iface enp130s0f1 -n 4 -ppn 1 -f /home/j.markin/hpcproject/torchprojects/dataset_example_mpi/hostfile_eth1 ./load_data > /home/j.markin/hpcproject/torchprojects/dataset_example_mpi/logs_eth/train_model_${np}.log 2>&1 &
 

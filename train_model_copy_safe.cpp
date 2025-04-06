@@ -14,8 +14,8 @@
 using namespace ff;
 std::mutex mtx;
 
-const int NUM_WORKERS = 4;
-const int NUM_EPOCHS = 5;
+const int NUM_WORKERS = 8;
+const int NUM_EPOCHS = 10;
 const int BATCH_SIZE = 64;
 
 // **CIFAR100 Dataset Class**
@@ -93,7 +93,7 @@ struct Source : ff_monode_t<TensorWrapper> {
         }
 
         try {
-            model = torch::jit::load("../resnet18_cifar100.pt");
+            model = torch::jit::load("../resnet152.pt");
             std::cout << "Model loaded successfully\n";
         } catch (const c10::Error& e) {
             std::cerr << "Error loading model: " << e.what() << std::endl;
@@ -141,6 +141,7 @@ struct Source : ff_monode_t<TensorWrapper> {
                 /*batch_size=*/64
             );
 
+            int batch_counter = 0;
             for (auto& batch : *data_loader) {
                 // auto data = batch.data.to(device);
                 // //std::cout << "Source: Sending data to workers\n";
@@ -211,7 +212,7 @@ struct Worker : ff_minode_t<TensorWrapper> {
         }
 
         try {
-            model = torch::jit::load("../resnet18_cifar100.pt");
+            model = torch::jit::load("../resnet152.pt");
             std::cout << "Model loaded successfully\n";
         } catch (const c10::Error& e) {
             std::cerr << "Error loading model: " << e.what() << std::endl;
@@ -417,14 +418,14 @@ int main(int argc, char* argv[]) {
 
     ff_pipeline mainPipe;
     ff_a2a a2a;
-    Source source;
+    Source source, source2, source3, source4;
     //Start source1;
     Sink sink;
     FeedBack feedback;
 
     // **Worker Pool**
     std::vector<Worker*> workers;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 8; ++i) {
         workers.push_back(new Worker());
     }
 
@@ -435,15 +436,23 @@ int main(int argc, char* argv[]) {
     mainPipe.add_stage(&feedback);
 
     // **Connect Nodes**
-    a2a.add_firstset<Source>({&source});
+    //a2a.add_firstset<Source>({&source});
+    a2a.add_firstset<Source>({&source, &source2, &source3, &source4});
     a2a.add_secondset<Worker>(workers);
 
     // **Create Distributed Groups**
     //source1.createGroup("G1") << &source1;  // Group for source node
-    a2a.createGroup("G2") << &source; // Group for source node
-    a2a.createGroup("G3") << workers[0] << workers[1] << workers[2] << workers[3];  // Group for workers
-    sink.createGroup("G4") << &sink;  // Group for sink node
-    feedback.createGroup("G5") << &feedback;  // Group for feedback node
+    // a2a.createGroup("G2") << &source; // Group for source node
+    // a2a.createGroup("G3") << workers[0] << workers[1] << workers[2] << workers[3];  // Group for workers
+    // sink.createGroup("G4") << &sink;  // Group for sink node
+    // feedback.createGroup("G5") << &feedback;  // Group for feedback node
+
+    a2a.createGroup("G1") << &source << workers[0] << workers[1];
+    a2a.createGroup("G2") << &source2 << workers[2] << workers[3];
+    a2a.createGroup("G3") << &source3 << workers[4] << workers[5];
+    a2a.createGroup("G4") << &source4 << workers[6] << workers[7];
+    sink.createGroup("G5") << &sink;
+    feedback.createGroup("G6") << &feedback;
 
     mainPipe.wrap_around();  // Wrap the pipeline
 

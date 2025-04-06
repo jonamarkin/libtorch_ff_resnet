@@ -9,18 +9,20 @@
 #include <mutex>
 #include <queue>
 #include <atomic>
+#include <algorithm>  
+#include <random>  
 
 using namespace ff;
 std::mutex mtx;
 
 // Configuration constants
-const int NUM_WORKERS = 8;
-const int NUM_EPOCHS = 5;
+const int NUM_WORKERS = 4;
+const int NUM_EPOCHS = 2;
 const int BATCH_SIZE = 64;
 const float LEARNING_RATE = 0.001;
-const std::string MODEL_PATH = "resnet152.pt";
+const std::string MODEL_PATH = "resnet18_cifar100.pt";
 const std::string DATA_PATH = "./data/cifar-100-binary/cifar-100-binary";
-const std::string OUTPUT_MODEL_PATH = "resnet152_trained_distributed.pt";
+const std::string OUTPUT_MODEL_PATH = "resnet18_trained_distributed.pt";
 
 // Enum to indicate type of tensor message
 enum class TensorType { 
@@ -184,6 +186,7 @@ public:
 // =====================================================================
 // Source Node: Manages model, distributes data, and controls training flow
 // =====================================================================
+// Modified Source Node that partitions the dataset
 struct Source : ff_monode_t<TensorWrapper> {
     torch::Device device;
     torch::jit::script::Module model;
@@ -193,7 +196,7 @@ struct Source : ff_monode_t<TensorWrapper> {
     float best_accuracy;
     
     Source() 
-        : device(torch::kCPU),  // Explicitly initialize device
+        : device(torch::kCPU),
         train_dataset(DATA_PATH, true), 
         test_dataset(DATA_PATH, false),
         epoch(0), 
@@ -217,6 +220,7 @@ struct Source : ff_monode_t<TensorWrapper> {
 
 
     TensorWrapper* svc(TensorWrapper* w) {
+        
         // First run or after receiving weights from previous epoch
         if (w == nullptr || w->type == TensorType::WEIGHTS) {
             // Update model if we received weights from previous epoch
@@ -239,13 +243,13 @@ struct Source : ff_monode_t<TensorWrapper> {
                     std::cout << "New best model saved with accuracy: " << best_accuracy << "%" << std::endl;
                 }
                 
-                // Increment epoch and check if we're done
                 epoch++;
                 if (epoch >= NUM_EPOCHS) {
                     std::cout << "Training completed after " << NUM_EPOCHS << " epochs!" << std::endl;
-                    for (int i = 0; i < NUM_WORKERS; i++) {
-                        ff_send_out_to(new TensorWrapper(TensorType::STOP), i);
-                    }
+                    // for (int i = 0; i < NUM_WORKERS; i++) {
+                    //     ff_send_out_to(new TensorWrapper(TensorType::STOP), i);
+                    // }
+                    ff_send_out(new TensorWrapper(TensorType::STOP));
                     return EOS;
                 }
             }
@@ -265,23 +269,8 @@ struct Source : ff_monode_t<TensorWrapper> {
                 ff_send_out_to(new TensorWrapper(TensorType::EPOCH_START, epoch), i);
             }
             
-            // Distribute data batches to workers in round-robin fashion
-            auto data_loader = torch::data::make_data_loader(
-                train_dataset.map(torch::data::transforms::Stack<>()),
-                torch::data::DataLoaderOptions().batch_size(BATCH_SIZE)
-            );
-            
-            int batch_idx = 0;
-            for (auto& batch : *data_loader) {
-                auto data = batch.data.to(device);
-                auto target = batch.target.to(device);
-                
-                // Round-robin distribution
-                int target_worker = batch_idx % NUM_WORKERS;
-                batch_idx++;
-                
-                ff_send_out_to(new TensorWrapper(data, target, TensorType::DATA_BATCH), target_worker);
-            }
+            // Partition the dataset and distribute to workers
+            PartitionAndDistributeDataset();
             
             // Send epoch end marker
             for (int i = 0; i < NUM_WORKERS; i++) {
@@ -292,6 +281,62 @@ struct Source : ff_monode_t<TensorWrapper> {
         }
         
         return GO_ON;
+    }
+    
+    void PartitionAndDistributeDataset() {
+        // Get the size of the dataset
+        size_t dataset_size = train_dataset.size().value();
+        size_t samples_per_worker = dataset_size / NUM_WORKERS;
+        
+        std::cout << "Partitioning dataset of " << dataset_size << " samples into " 
+                  << NUM_WORKERS << " parts with ~" << samples_per_worker << " samples each" << std::endl;
+        
+        // Create a shuffled index vector
+        std::vector<size_t> indices(dataset_size);
+        for (size_t i = 0; i < dataset_size; i++) {
+            indices[i] = i;
+        }
+        
+        // Shuffle the indices to ensure random distribution
+        unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+        std::shuffle(indices.begin(), indices.end(), std::default_random_engine(seed));
+        
+        // Distribute samples to each worker
+        for (int worker_id = 0; worker_id < NUM_WORKERS; worker_id++) {
+            // Calculate start and end indices for this worker
+            size_t start_idx = worker_id * samples_per_worker;
+            size_t end_idx = (worker_id == NUM_WORKERS - 1) ? 
+                             dataset_size : // Last worker takes remaining samples
+                             (worker_id + 1) * samples_per_worker;
+            
+            std::cout << "Worker " << worker_id << " gets samples from " << start_idx 
+                      << " to " << end_idx - 1 << " (" << end_idx - start_idx << " samples)" << std::endl;
+            
+            // Create batches for this worker
+            for (size_t i = start_idx; i < end_idx; i += BATCH_SIZE) {
+                // Calculate batch size (last batch might be smaller)
+                //size_t current_batch_size = std::min(BATCH_SIZE, end_idx - i);
+                size_t current_batch_size = (BATCH_SIZE < (end_idx - i)) ? BATCH_SIZE : (end_idx - i);
+                
+                // Skip if batch is too small
+                if (current_batch_size < 2) continue;
+                
+                // Create tensors for this batch
+                torch::Tensor batch_data = torch::empty({static_cast<long>(current_batch_size), 3, 32, 32}, torch::kFloat32);
+                torch::Tensor batch_labels = torch::empty(current_batch_size, torch::kInt64);
+                
+                // Fill tensors with samples
+                for (size_t j = 0; j < current_batch_size; j++) {
+                    size_t sample_idx = indices[i + j];
+                    auto sample = train_dataset.get(sample_idx);
+                    batch_data[j] = sample.data;
+                    batch_labels[j] = sample.target;
+                }
+                
+                // Send this batch to the appropriate worker
+                ff_send_out_to(new TensorWrapper(batch_data.to(device), batch_labels.to(device), TensorType::DATA_BATCH), worker_id);
+            }
+        }
     }
     
     float validate() {
@@ -459,6 +504,13 @@ struct Worker : ff_minode_t<TensorWrapper> {
         
         return GO_ON;
     }
+
+    void svc_end() {
+        //const std::lock_guard<std::mutex> lock(mtx);
+        std::cout << "Worker " << get_my_id() << " processed "
+                  << batches_processed << " batches" << std::endl;
+        delete optimizer;
+    }
 };
 
 // =====================================================================
@@ -547,13 +599,13 @@ int main(int argc, char* argv[]) {
         // Create nodes
         ff_pipeline main_pipeline;
         ff_a2a a2a;
-        Source source, source2, source3, source4;
+        Source source, source2;
         Sink sink;
         Feedback feedback;
         
         // Create worker pool
         std::vector<Worker*> workers;
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 4; ++i) {
             workers.push_back(new Worker());
         }
 
@@ -564,24 +616,14 @@ int main(int argc, char* argv[]) {
         main_pipeline.add_stage(&feedback);
         
         // Set up the all-to-all pattern
-        // a2a.add_firstset<Source>({&source});
-        // a2a.add_secondset<Worker>(workers);
-        
-        // // Create groups for nodes
-        // a2a.createGroup("G1") << &source;
-        // a2a.createGroup("G2") << workers[0] << workers[1];
-        // //a2a.createGroup("G3") << workers[2] << workers[3];
-        // sink.createGroup("G4") << &sink;
-        // feedback.createGroup("G5") << &feedback;
-
-        a2a.add_firstset<Source>({&source, &source2, &source3, &source4});
+        a2a.add_firstset<Source>({&source});
         a2a.add_secondset<Worker>(workers);
         
         // Create groups for nodes
         a2a.createGroup("G1") << &source << workers[0] << workers[1];
         a2a.createGroup("G2") << &source2 << workers[2] << workers[3];
-        a2a.createGroup("G3") << &source3 << workers[4] << workers[5];
-        a2a.createGroup("G4") << &source4 << workers[6] << workers[7];
+        // a2a.createGroup("G3") << &source3 << workers[4] << workers[5];
+        // a2a.createGroup("G4") << &source4 << workers[6] << workers[7];
         sink.createGroup("G5") << &sink;
         feedback.createGroup("G6") << &feedback;
         
@@ -606,9 +648,9 @@ int main(int argc, char* argv[]) {
         std::cout << "Final model saved to " << OUTPUT_MODEL_PATH << std::endl;
         
         // Clean up workers
-        for (auto* w : workers) {
-            delete w;
-        }
+        // for (auto* w : workers) {
+        //     delete w;
+        // }
         
     } catch (const std::exception& e) {
         std::cerr << "Error during training: " << e.what() << std::endl;
